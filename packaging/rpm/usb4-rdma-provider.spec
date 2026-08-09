@@ -10,7 +10,11 @@ License:        GPL-2.0-only OR BSD-3-Clause
 URL:            https://github.com/hellas-ai/thunderbolt-ibverbs
 
 BuildArch:      x86_64
-Requires:       libibverbs
+Requires:       libibverbs%{?_isa}
+# The provider ABI is tied to the rdma-core release it was built from. When the
+# builder knows the target's libibverbs version it passes --define "rdma_abi X"
+# so the RPM refuses to install against a mismatched libibverbs.
+%{?rdma_abi:Requires: libibverbs%{?_isa} >= %{rdma_abi}}
 
 %description
 Drop-in libibverbs provider that lets libibverbs enumerate and use

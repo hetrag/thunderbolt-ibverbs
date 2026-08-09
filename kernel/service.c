@@ -115,9 +115,9 @@ struct tb_property_dir *tbv_service_create_apple_dir(u32 prtcstns)
 }
 
 static enum tbv_backend_type
-tbv_service_backend_from_id(const struct tb_service_id *id)
+tbv_service_backend(const struct tb_service *svc)
 {
-	if (id->protocol_id == TBV_APPLE_PRTCID)
+	if (svc->prtcid == TBV_APPLE_PRTCID)
 		return TBV_BACKEND_APPLE;
 	return TBV_BACKEND_NATIVE;
 }
@@ -358,9 +358,14 @@ static bool tbv_service_apple_xdomain_allowed(const struct tb_xdomain *xd)
 	return false;
 }
 
-static u32 tbv_service_native_lane(const struct tb_service_id *id)
+static u32 tbv_service_native_lane(const struct tb_service *svc)
 {
-	return (u32)id->driver_data;
+	if (!svc->key)
+		return 0;
+	if (strcmp(svc->key, "tbverb1") == 0) return 1;
+	if (strcmp(svc->key, "tbverb2") == 0) return 2;
+	if (strcmp(svc->key, "tbverb3") == 0) return 3;
+	return 0;
 }
 
 static u32 tbv_config_native_lane_count(const struct tbv_state *state)
@@ -372,7 +377,6 @@ static u32 tbv_config_native_lane_count(const struct tbv_state *state)
 }
 
 static u32 tbv_service_path_id(const struct tb_service *svc,
-			       const struct tb_service_id *id,
 			       enum tbv_backend_type backend)
 {
 	u32 lane;
@@ -380,23 +384,22 @@ static u32 tbv_service_path_id(const struct tb_service *svc,
 	if (backend != TBV_BACKEND_NATIVE)
 		return svc->prtcid;
 
-	lane = tbv_service_native_lane(id);
+	lane = tbv_service_native_lane(svc);
 	if (!lane)
 		return svc->prtcid;
 
 	return (svc->prtcid << 8) | lane;
 }
 
-static int tbv_service_probe(struct tb_service *svc,
-			     const struct tb_service_id *id)
+TBV_DEFINE_SERVICE_PROBE(tbv_service_probe)
 {
-	enum tbv_backend_type backend = tbv_service_backend_from_id(id);
+	enum tbv_backend_type backend = tbv_service_backend(svc);
 	struct tb_xdomain *xd = tb_service_parent(svc);
 	struct tbv_service_binding *binding;
 	struct tbv_rail_key key;
 	struct tbv_peer *peer;
 	struct tbv_rail *rail;
-	u32 native_lane = tbv_service_native_lane(id);
+	u32 native_lane = tbv_service_native_lane(svc);
 	u32 path_id;
 	int ret;
 
@@ -424,7 +427,7 @@ static int tbv_service_probe(struct tb_service *svc,
 		goto err_free_binding;
 	}
 
-	path_id = tbv_service_path_id(svc, id, backend);
+	path_id = tbv_service_path_id(svc, backend);
 	tbv_rail_key_init(&key, xd->route, xd->link, xd->depth, path_id);
 	rail = tbv_peer_add_rail(peer, &key, native_lane);
 	if (IS_ERR(rail)) {
@@ -559,7 +562,7 @@ static struct tb_service_driver tbv_service_driver = {
 		.owner = THIS_MODULE,
 		.name = TBV_DRV_NAME,
 	},
-	.probe = tbv_service_probe,
+	.probe = TBV_SERVICE_PROBE(tbv_service_probe),
 	.remove = tbv_service_remove,
 	.id_table = tbv_service_ids,
 };

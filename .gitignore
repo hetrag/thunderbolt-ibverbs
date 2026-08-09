@@ -31,3 +31,7 @@ thunderbolt-ibverbs/results/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local build/dist outputs
+dist/
+userspace/usb4_rdma/build/

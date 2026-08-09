@@ -1421,8 +1421,7 @@ tbv_tbnet_minimal_legacy_session_allowed(struct tbv_tbnet_identity *identity,
 #endif
 }
 
-static int tbv_tbnet_minimal_probe(struct tb_service *svc,
-				   const struct tb_service_id *id)
+TBV_DEFINE_SERVICE_PROBE(tbv_tbnet_minimal_probe)
 {
 	struct tbv_tbnet_identity *identity = tbv_tbnet_minimal_identity;
 	struct tb_xdomain *xd = tb_service_parent(svc);
@@ -1574,7 +1573,7 @@ static struct tb_service_driver tbv_tbnet_minimal_driver = {
 		.owner = THIS_MODULE,
 		.name = "thunderbolt-ibverbs-tbnet",
 	},
-	.probe = tbv_tbnet_minimal_probe,
+	.probe = TBV_SERVICE_PROBE(tbv_tbnet_minimal_probe),
 	.remove = tbv_tbnet_minimal_remove,
 	.id_table = tbv_tbnet_minimal_ids,
 };

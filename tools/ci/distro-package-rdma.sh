@@ -23,8 +23,12 @@ Environment:
   TBV_VERSION       Override base version (default reads PACKAGE_VERSION from dkms.conf).
   OUT_DIR           Output directory (default $PWD/dist).
   WORK_DIR          Scratch directory (default mktemp).
-  RDMA_CORE_TAG     rdma-core git tag for the upstream-source distros (default v62.0).
+  RDMA_CORE_TAG     rdma-core git tag for the upstream-source distros. On fedora
+                    this defaults to the tag matching the distro's own rdma-core
+                    package (e.g. v61.0 on F44); elsewhere it defaults to v62.0.
                     Ignored for ubuntu (uses apt-get source).
+  TBV_RDMA_ABI      libibverbs version to encode as a minimum Requires in the
+                    .rpm (e.g. 61.0). Optional.
   TBV_SKIP_DEPS     Skip distro deps install (default 0).
   TBV_SKIP_BUILD    Skip the rdma-core build step (used by the arch builder
                     re-exec; default 0).
@@ -57,7 +61,26 @@ fi
 
 out_dir="${OUT_DIR:-$repo_root/dist}"
 work_dir="${WORK_DIR:-$(mktemp -d)}"
-rdma_core_tag="${RDMA_CORE_TAG:-v62.0}"
+# The provider .so must be built from the same rdma-core release as the target
+# distro's libibverbs, otherwise the PABI suffix (libusb4_rdma-rdmavNN.so) and
+# the provider ABI won't match and libibverbs silently ignores the provider.
+# On Fedora we can ask rpm/dnf what that release actually is instead of
+# hardcoding it.
+detect_fedora_rdma_core_tag() {
+	local v
+	v="$(rpm -q --qf '%{VERSION}\n' rdma-core 2>/dev/null | head -n1)"
+	[[ "$v" =~ ^[0-9] ]] ||
+		v="$(dnf -q repoquery --latest-limit=1 --qf '%{version}' rdma-core 2>/dev/null | head -n1)"
+	[[ "$v" =~ ^[0-9] ]] || return 1
+	printf 'v%s\n' "$v"
+}
+
+rdma_core_tag="${RDMA_CORE_TAG:-}"
+if [[ -z "$rdma_core_tag" && "$distro" == "fedora" ]]; then
+	rdma_core_tag="$(detect_fedora_rdma_core_tag || true)"
+fi
+rdma_core_tag="${rdma_core_tag:-v62.0}"
+rdma_abi="${TBV_RDMA_ABI:-}"
 skip_deps="${TBV_SKIP_DEPS:-0}"
 skip_build="${TBV_SKIP_BUILD:-0}"
 pkgname="usb4-rdma-provider"
@@ -218,7 +241,11 @@ build_rpm() {
 	substitute "$repo_root/packaging/rpm/${pkgname}.spec" \
 		"$rpm_top/SPECS/${pkgname}.spec"
 
-	rpmbuild --define "_topdir $rpm_top" -bb \
+	local defines=()
+	if [[ -n "$rdma_abi" ]]; then
+		defines+=(--define "rdma_abi $rdma_abi")
+	fi
+	rpmbuild --define "_topdir $rpm_top" "${defines[@]}" -bb \
 		"$rpm_top/SPECS/${pkgname}.spec"
 
 	local rpm

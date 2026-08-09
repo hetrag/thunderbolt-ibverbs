@@ -4,6 +4,7 @@
 
 #include <linux/atomic.h>
 #include <linux/bitops.h>
+#include <linux/compiler.h>
 #include <linux/completion.h>
 #include <linux/device.h>
 #include <linux/idr.h>
@@ -15,12 +16,44 @@
 #include <linux/refcount.h>
 #include <linux/sizes.h>
 #include <linux/spinlock.h>
+#include <linux/thunderbolt.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
 
 #include "proto/config.h"
+
+/*
+ * "thunderbolt: Stop passing matched device ID to .probe()" dropped the
+ * struct tb_service_id argument from tb_service_driver::probe. It sits in the
+ * thunderbolt tree's `next` branch and is not upstream yet, and it carries no
+ * version bump: mainline 7.2-rc and `next` both report LINUX_VERSION_CODE ==
+ * KERNEL_VERSION(7, 2, 0), so a version test cannot tell them apart. Probe the
+ * member type instead, and always define the probe with the new one-argument
+ * signature -- everything it needs is reachable through svc.
+ *
+ * TBV_DEFINE_SERVICE_PROBE() defines the real probe plus a thin two-argument
+ * trampoline; TBV_SERVICE_PROBE() selects whichever one the running headers
+ * expect. __builtin_choose_expr() discards the other at compile time.
+ */
+#define TBV_PROBE_TAKES_ID						\
+	__builtin_types_compatible_p(					\
+		typeof(((struct tb_service_driver *)0)->probe),		\
+		int (*)(struct tb_service *, const struct tb_service_id *))
+
+#define TBV_DEFINE_SERVICE_PROBE(fn)					\
+	static int fn(struct tb_service *svc);				\
+	static __maybe_unused int fn##_with_id(				\
+		struct tb_service *svc,					\
+		const struct tb_service_id *id __maybe_unused)		\
+	{								\
+		return fn(svc);						\
+	}								\
+	static int fn(struct tb_service *svc)
+
+#define TBV_SERVICE_PROBE(fn)						\
+	__builtin_choose_expr(TBV_PROBE_TAKES_ID, fn##_with_id, fn)
 
 #define TBV_DRV_NAME "thunderbolt_ibverbs"
 #define TBV_ETH_ALEN 6

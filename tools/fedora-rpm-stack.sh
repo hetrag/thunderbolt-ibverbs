@@ -42,12 +42,8 @@ Default (no arguments):
 Environment:
   KVER           Kernel version to build against (default: running kernel $(uname -r)).
                  Uses /usr/src/kernels/$KVER or /lib/modules/$KVER/build.
-  KERNEL_SRC     Kernel git tree (default $HOME/git/thunderbolt; only for 'kernel' stage).
-  KERNEL_REF     Ref to build from (default origin/master, westeri's mainline
-                 mirror). Do NOT use the thunderbolt-for-vX.Y-rcN tags: they
-                 name the merge window they target, not their base, so they
-                 build a stale base kernel. `origin/next` is likewise many
-                 -rc's behind mainline.
+  KERNEL_SRC     Kernel git tree (default $HOME/git/linux; only for 'kernel' stage).
+  KERNEL_REF     Ref to build from (default v7.2).
   KERNEL_FETCH   1 to `git fetch --tags` before building (default 1).
   KERNEL_CONFIG  Config to seed from (default newest /boot/config-*).
   LOCALVERSION   CONFIG_LOCALVERSION value (default -tbv).
@@ -76,8 +72,8 @@ for arg in "$@"; do
 done
 [[ ${#stages[@]} -gt 0 ]] || stages=(module provider perftest)
 
-kernel_src="${KERNEL_SRC:-$HOME/git/thunderbolt}"
-kernel_ref="${KERNEL_REF:-origin/master}"
+kernel_src="${KERNEL_SRC:-$HOME/git/linux}"
+kernel_ref="${KERNEL_REF:-v7.2}"
 kernel_fetch="${KERNEL_FETCH:-1}"
 kernel_config="${KERNEL_CONFIG:-$(ls -1v /boot/config-* 2>/dev/null | tail -n 1)}"
 localversion="${LOCALVERSION:--tbv}"
@@ -137,13 +133,9 @@ kernel_should_skip_patch() {
 	return 1
 }
 
-# Build from westeri's `master` (a mainline mirror), not `next`. The
-# thunderbolt-for-vX.Y-rcN tags name the merge window they target, not their
-# base -- they are cut from `next`, whose Makefile can sit many -rc's behind
-# mainline, which is why they yield stale releases like 7.2.0-rc1. `master`
-# already carries every 01xx maintainer patch this repo depends on (ConfigFS,
-# USB4STREAM, tb_ring_flush, tb_property_merge_dir); only the handful of
-# not-yet-upstream `next` commits are missing, and none are used here.
+# Build from mainline Linux v7.2. Mainline Linux 7.2 already carries every
+# 01xx Thunderbolt maintainer patch (ConfigFS, USB4STREAM, tb_ring_flush,
+# tb_property_merge_dir); only the project-local 00xx series needs applying.
 resolve_kernel_ref() {
 	git -C "$kernel_src" rev-parse --git-dir >/dev/null 2>&1 ||
 		die "not a git tree: $kernel_src"
@@ -155,7 +147,7 @@ resolve_kernel_ref() {
 	fi
 
 	git -C "$kernel_src" rev-parse -q --verify "${kernel_ref}^{commit}" >/dev/null ||
-		die "unknown kernel ref: $kernel_ref"
+		die "unknown kernel ref: $kernel_ref in $kernel_src"
 
 	local base
 	base="$(git -C "$kernel_src" show "$kernel_ref:Makefile" 2>/dev/null |
@@ -186,9 +178,8 @@ apply_patches() {
 	git -C "$kernel_src" checkout -q -B tbv-build "$kernel_ref"
 	git -C "$kernel_src" clean -qfdx -e .config -e rpmbuild || true
 
-	# 01xx patches are the maintainer-tree series and are already contained in
-	# the westeri thunderbolt ref we build from; only the local 00xx
-	# series needs applying.
+	# 01xx patches are the maintainer-tree series and are already merged into
+	# mainline Linux 7.2; only the local 00xx series needs applying.
 	local p base applied=0 present=0 out
 	for p in "$repo_root"/kernel-workflow/patches/00*.patch; do
 		base="$(basename "$p")"

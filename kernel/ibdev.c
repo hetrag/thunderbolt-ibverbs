@@ -9148,9 +9148,7 @@ static struct ib_mr *tbv_get_dma_mr(struct ib_pd *pd, int access)
 
 static struct ib_mr *tbv_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 				     u64 virt_addr, int access,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
 				     struct ib_dmah *dmah,
-#endif
 				     struct ib_udata *udata)
 {
 	struct tbv_mr *mr;
@@ -9163,11 +9161,7 @@ static struct ib_mr *tbv_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	if (!mr)
 		return ERR_PTR(-ENOMEM);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
 	mr->umem = ib_umem_get_va(pd->device, start, length, access);
-#else
-	mr->umem = ib_umem_get(pd->device, start, length, access);
-#endif
 	if (IS_ERR(mr->umem)) {
 		struct ib_umem *umem = mr->umem;
 

@@ -162,7 +162,7 @@ tools/fedora-rpm-stack.sh all          # includes the custom patched kernel stag
 
 Useful knobs: `KVER` (default `$(uname -r)`), `RDMA_CORE_TAG` (default:
 whatever `rdma-core` Fedora ships), `PERFTEST_TAG` (default `26.04.17`),
-`KERNEL_SRC` (default `~/git/thunderbolt`), `KERNEL_REF` (default `origin/master`),
+`KERNEL_SRC` (default `~/git/linux`), `KERNEL_REF` (default `v7.2`),
 `OUT_DIR`, `JOBS`.
 
 Then, on the target host:

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Build the full Fedora RPM stack for thunderbolt-ibverbs on the local machine:
+# Build the Fedora RPM stack for thunderbolt-ibverbs on the local machine:
 #
-#   1. kernel      Linux 7.2 + the kernel-workflow/patches Thunderbolt series,
-#                  configured from the running system's config, packaged with
-#                  the kernel's own `make binrpm-pkg`.
-#   2. module      thunderbolt_ibverbs.ko built against *that* kernel and
-#                  packaged as a kernel-matched binary kmod RPM.
-#   3. provider    usb4_rdma libibverbs provider built against the rdma-core
+#   1. module      thunderbolt_ibverbs.ko built against the running kernel (or
+#                  $KVER) and packaged as a kernel-matched binary kmod RPM.
+#   2. provider    usb4_rdma libibverbs provider built against the rdma-core
 #                  version Fedora actually ships (so the PABI suffix and the
 #                  libibverbs ABI match the stock libibverbs).
-#   4. perftest    the linux-rdma perftest suite rebuilt with MLX5DV and the
+#   3. perftest    the linux-rdma perftest suite rebuilt with MLX5DV and the
 #                  extended-CQ/accelerator backends off, so it actually works
 #                  against usb4_rdma devices and stays wire-compatible with the
 #                  macOS perftest build.
+#   4. kernel      (optional) Linux 7.2 + the kernel-workflow/patches Thunderbolt
+#                  series, configured from the running system's config, packaged
+#                  with the kernel's own `make binrpm-pkg`.
 #
 # Nothing here installs into the running system; artefacts land in OUT_DIR.
 #
@@ -26,18 +26,23 @@ repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
 	cat <<'EOF'
 Usage:
-  tools/fedora-rpm-stack.sh [all|kernel|module|provider|perftest]...
+  tools/fedora-rpm-stack.sh [module|provider|perftest|kernel|all]...
 
 Stages:
-  kernel     Patch + build the kernel and produce kernel / kernel-devel RPMs.
-  module     Build thunderbolt_ibverbs.ko against that kernel, produce a kmod RPM.
+  module     Build thunderbolt_ibverbs.ko against the kernel, produce a kmod RPM.
   provider   Build the usb4_rdma libibverbs provider RPM against Fedora's
              rdma-core version.
   perftest   Build the usb4_rdma-compatible perftest RPM.
-  all        kernel + module + provider + perftest (default).
+  kernel     Patch + build a custom kernel and produce kernel / kernel-devel RPMs.
+  all        kernel + module + provider + perftest.
+
+Default (no arguments):
+  module provider perftest (builds against running kernel or $KVER).
 
 Environment:
-  KERNEL_SRC     Kernel git tree (default $HOME/git/thunderbolt).
+  KVER           Kernel version to build against (default: running kernel $(uname -r)).
+                 Uses /usr/src/kernels/$KVER or /lib/modules/$KVER/build.
+  KERNEL_SRC     Kernel git tree (default $HOME/git/thunderbolt; only for 'kernel' stage).
   KERNEL_REF     Ref to build from (default origin/master, westeri's mainline
                  mirror). Do NOT use the thunderbolt-for-vX.Y-rcN tags: they
                  name the merge window they target, not their base, so they
@@ -47,8 +52,6 @@ Environment:
   KERNEL_CONFIG  Config to seed from (default newest /boot/config-*).
   LOCALVERSION   CONFIG_LOCALVERSION value (default -tbv).
   KERNEL_DEBUG_INFO  1 to keep DWARF/BTF debug info (default 0; much faster).
-  KVER           Skip the kernel stage and build the module against this
-                 already-installed kernel (uses /usr/src/kernels/$KVER).
   RDMA_CORE_TAG  rdma-core git tag (default: derived from Fedora's rdma-core).
   PERFTEST_TAG   linux-rdma/perftest tag to build (default 26.04.17, matching
                  nix/perftest.nix so Linux and macOS builds stay wire-compatible).
@@ -71,7 +74,7 @@ for arg in "$@"; do
 		*) printf 'error: unknown stage: %s\n' "$arg" >&2; usage >&2; exit 1 ;;
 	esac
 done
-[[ ${#stages[@]} -gt 0 ]] || stages=(kernel module provider perftest)
+[[ ${#stages[@]} -gt 0 ]] || stages=(module provider perftest)
 
 kernel_src="${KERNEL_SRC:-$HOME/git/thunderbolt}"
 kernel_ref="${KERNEL_REF:-origin/master}"
@@ -86,6 +89,7 @@ skip_deps="${SKIP_DEPS:-0}"
 perftest_tag="${PERFTEST_TAG:-26.04.17}"
 patch_skip="${PATCH_SKIP:-0006 0010-thunderbolt-trace}"
 state_file="$out_dir/.fedora-rpm-stack.kver"
+built_kver=""
 
 [[ -n "$version" ]] || { printf 'error: could not determine version from dkms.conf\n' >&2; exit 1; }
 mkdir -p "$out_dir"
@@ -100,13 +104,27 @@ as_root() {
 install_deps() {
 	[[ "$skip_deps" == "1" ]] && return 0
 	log "Installing build dependencies"
-	as_root dnf install -y -q --setopt=install_weak_deps=False \
-		autoconf automake bc bison cmake curl dwarves elfutils-libelf-devel \
-		flex gcc gcc-c++ git libcap-devel libibumad-devel libnl3-devel \
-		librdmacm-devel libtool make ncurses-devel ninja-build openssl-devel \
-		openssl patch patchelf pciutils-devel perl pkgconf python3-docutils \
-		python3-pyelftools rdma-core-devel rpm-build rsync systemd-devel tar \
+	local deps=(
+		autoconf automake bc bison cmake curl dwarves elfutils-libelf-devel
+		flex gcc gcc-c++ git libcap-devel libibumad-devel libnl3-devel
+		librdmacm-devel libtool make ncurses-devel ninja-build openssl-devel
+		openssl patch patchelf pciutils-devel perl pkgconf python3-docutils
+		python3-pyelftools rdma-core-devel rpm-build rsync systemd-devel tar
 		xz zstd
+	)
+	local has_kernel=0 has_module=0
+	for s in "${stages[@]}"; do
+		[[ "$s" == "kernel" ]] && has_kernel=1
+		[[ "$s" == "module" ]] && has_module=1
+	done
+	if [[ "$has_module" -eq 1 && "$has_kernel" -eq 0 ]]; then
+		local kver
+		kver="$(resolve_kver)"
+		if [[ ! -d "/lib/modules/$kver/build" && ! -d "/usr/src/kernels/$kver" ]]; then
+			deps+=("kernel-devel-${kver}")
+		fi
+	fi
+	as_root dnf install -y -q --setopt=install_weak_deps=False "${deps[@]}"
 }
 
 # ---------------------------------------------------------------- kernel ----
@@ -245,6 +263,7 @@ build_kernel() {
 
 	local kver_pkg="${kver//-/_}"
 	printf '%s\n' "$kver" > "$state_file"
+	built_kver="$kver"
 
 	local rpm found=0
 	while IFS= read -r rpm; do
@@ -260,27 +279,35 @@ build_kernel() {
 # ---------------------------------------------------------------- module ----
 
 resolve_kver() {
-	if [[ -n "${KVER:-}" ]]; then
+	if [[ -n "${built_kver:-}" ]]; then
+		printf '%s\n' "$built_kver"
+	elif [[ -n "${KVER:-}" ]]; then
 		printf '%s\n' "$KVER"
-	elif [[ -r "$state_file" ]]; then
+	elif printf '%s\n' "${stages[@]}" | grep -qx "kernel" && [[ -r "$state_file" ]]; then
 		cat "$state_file"
 	else
-		die "no kernel built yet; run the kernel stage or set KVER="
+		uname -r
 	fi
 }
 
 resolve_kdir() {
 	local kver="$1"
-	# Prefer the tree we just built (no need to install kernel-devel first).
-	if [[ -n "${KVER:-}" ]] || [[ ! -r "$kernel_src/.config" ]]; then
-		:
-	elif [[ "$(make -s -C "$kernel_src" LOCALVERSION= kernelrelease 2>/dev/null)" == "$kver" ]]; then
-		printf '%s\n' "$kernel_src"
+	# Prefer the tree we just built in this run (no need to install kernel-devel first).
+	if [[ -n "${built_kver:-}" && -d "$kernel_src" && -r "$kernel_src/.config" ]]; then
+		if [[ "$(make -s -C "$kernel_src" LOCALVERSION= kernelrelease 2>/dev/null)" == "$kver" ]]; then
+			printf '%s\n' "$kernel_src"
+			return 0
+		fi
+	fi
+	if [[ -d "/lib/modules/$kver/build" ]]; then
+		printf '%s\n' "/lib/modules/$kver/build"
 		return 0
 	fi
-	[[ -d "/usr/src/kernels/$kver" ]] ||
-		die "no build tree for $kver; install kernel-devel-$kver from $out_dir"
-	printf '%s\n' "/usr/src/kernels/$kver"
+	if [[ -d "/usr/src/kernels/$kver" ]]; then
+		printf '%s\n' "/usr/src/kernels/$kver"
+		return 0
+	fi
+	die "no build tree for $kver; install kernel-devel-$kver"
 }
 
 # Pick the dependency that actually pins the kmod to its kernel. `make
@@ -296,6 +323,10 @@ kernel_requires() {
 		return 0
 	fi
 	if rpm -q --provides "kernel-${kver//-/_}" 2>/dev/null | grep -q "^kernel-uname-r = ${kver}$"; then
+		printf 'kernel-uname-r = %s\n' "$kver"
+		return 0
+	fi
+	if rpm -q --whatprovides "kernel-uname-r = ${kver}" 2>/dev/null | grep -q 'kernel'; then
 		printf 'kernel-uname-r = %s\n' "$kver"
 		return 0
 	fi
@@ -442,14 +473,33 @@ done
 log "Artefacts in $out_dir"
 ls -1 "$out_dir"/*.rpm 2>/dev/null || true
 
+has_built_kernel=0
+for s in "${stages[@]}"; do
+	[[ "$s" == "kernel" ]] && has_built_kernel=1
+done
+
+if [[ "$has_built_kernel" -eq 1 ]]; then
 cat <<EOF
 
 Install order on the target host:
   sudo dnf install $out_dir/kernel-*.rpm
   sudo dnf install $out_dir/thunderbolt-ibverbs-kmod-*.rpm
   sudo dnf install $out_dir/usb4-rdma-provider-*.rpm $out_dir/usb4-perftest-*.rpm
-  sudo reboot   # into the new kernel, then: modprobe thunderbolt_ibverbs
+  sudo reboot   # into the new kernel, then: sudo modprobe thunderbolt_ibverbs
 
 perftest tools install as usb4_ib_send_bw, usb4_ib_write_bw, ... on PATH
 (full prefix at /usr/libexec/usb4-perftest, i.e. TBV_PERFTEST=/usr/libexec/usb4-perftest).
 EOF
+else
+cat <<EOF
+
+Install on the current host:
+  sudo dnf install $out_dir/thunderbolt-ibverbs-kmod-*.rpm \\
+                   $out_dir/usb4-rdma-provider-*.rpm \\
+                   $out_dir/usb4-perftest-*.rpm
+  sudo modprobe thunderbolt_ibverbs
+
+perftest tools install as usb4_ib_send_bw, usb4_ib_write_bw, ... on PATH
+(full prefix at /usr/libexec/usb4-perftest, i.e. TBV_PERFTEST=/usr/libexec/usb4-perftest).
+EOF
+fi

@@ -137,48 +137,40 @@ DKMS builds the kernel module against your running kernel on install and
 rebuilds it after every kernel upgrade. Older kernels need the
 `linux-thunderbolt` build from this flake — see "Nix Thunderbolt Kernel" below.
 
-## Fedora: Build The Whole RPM Stack Locally
+## Fedora: Build The RPM Stack Locally
 
-`tools/fedora-rpm-stack.sh` builds the four matched RPMs on a Fedora host:
+`tools/fedora-rpm-stack.sh` builds matched RPMs on a Fedora host:
 
-1. a patched Linux kernel (the `kernel-workflow/patches` Thunderbolt series on
-   top of `thunderbolt/next`), configured from the running system's
-   `/boot/config-*` and packaged with the kernel's own `make binrpm-pkg`;
-2. `thunderbolt-ibverbs-kmod-<kver>` — the module prebuilt and signed against
-   exactly that kernel (the binary alternative to the DKMS package);
-3. `usb4-rdma-provider` — the libibverbs provider built against the *distro's*
+1. `thunderbolt-ibverbs-kmod-<kver>` — the module prebuilt and signed against
+   the running kernel (or `$KVER`) as a binary alternative to the DKMS package;
+2. `usb4-rdma-provider` — the libibverbs provider built against the *distro's*
    rdma-core release, so the PABI suffix (`libusb4_rdma-rdmavNN.so`) matches
    the stock `libibverbs`;
-4. `usb4-perftest` — the perftest suite rebuilt with `HAVE_MLX5DV=no` and the
+3. `usb4-perftest` — the perftest suite rebuilt with `HAVE_MLX5DV=no` and the
    extended-CQ / CUDA / ROCm / Neuron backends disabled, mirroring
-   `nix/perftest.nix`. Fedora's stock perftest links mlx5 direct verbs, which
-   grows the connection-negotiation struct by 8 bytes and breaks the on-wire
-   exchange against the macOS build.
+   `nix/perftest.nix`;
+4. `kernel` (optional) — a patched Linux kernel configured from `/boot/config-*`
+   and packaged with the kernel's own `make binrpm-pkg`.
 
 ```sh
-tools/fedora-rpm-stack.sh              # all four stages into ./dist
+tools/fedora-rpm-stack.sh              # module + provider + perftest for running kernel
+tools/fedora-rpm-stack.sh module       # just the kmod package
 tools/fedora-rpm-stack.sh provider     # just the provider
 tools/fedora-rpm-stack.sh perftest     # just perftest
-KVER=$(uname -r) tools/fedora-rpm-stack.sh module   # kmod for an existing kernel
+tools/fedora-rpm-stack.sh all          # includes the custom patched kernel stage
 ```
 
-Useful knobs: `KERNEL_SRC` (default `~/git/thunderbolt`), `KERNEL_REF`
-(default `origin/master`, westeri's mainline mirror — it already carries the
-upstreamed Thunderbolt work, while `origin/next` and the
-`thunderbolt-for-vX.Y-rcN` tags sit several `-rc`s behind mainline; those tags
-name the merge window they target, *not* their base), `LOCALVERSION` (default
-`-tbv`), `RDMA_CORE_TAG`
-(default: whatever `rdma-core` Fedora ships), `PERFTEST_TAG` (default
-`26.04.17`, matching `nix/perftest.nix`), `OUT_DIR`, `JOBS`. The kernel
-stage resets the kernel tree to `KERNEL_REF` on a `tbv-build` branch and runs
-`git clean -fdx`, so keep local kernel work elsewhere.
+Useful knobs: `KVER` (default `$(uname -r)`), `RDMA_CORE_TAG` (default:
+whatever `rdma-core` Fedora ships), `PERFTEST_TAG` (default `26.04.17`),
+`KERNEL_SRC` (default `~/git/thunderbolt`), `KERNEL_REF` (default `origin/master`),
+`OUT_DIR`, `JOBS`.
 
 Then, on the target host:
 
 ```sh
-sudo dnf install dist/kernel-*.rpm dist/thunderbolt-ibverbs-kmod-*.rpm \
+sudo dnf install dist/thunderbolt-ibverbs-kmod-*.rpm \
                  dist/usb4-rdma-provider-*.rpm dist/usb4-perftest-*.rpm
-sudo reboot   # into the new kernel; then: sudo modprobe thunderbolt_ibverbs
+sudo modprobe thunderbolt_ibverbs
 ```
 
 `usb4-perftest` installs under `/usr/libexec/usb4-perftest` with `usb4_`-prefixed
